@@ -4,6 +4,7 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Tạo giấy chứng nhận thành tích sinh viên</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 :root{--navy:#1f467f;--gold:#d5b32d;--ink:#172b4d}
 *{box-sizing:border-box}body{margin:0;background:#f3f6fb;color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,Arial,sans-serif}
@@ -35,7 +36,8 @@ footer{max-width:1180px;margin:0 auto;padding:0 18px 28px;color:#6b778b;font-siz
 <hr style="border:0;border-top:1px solid #e7ecf3;margin:22px 0">
 <h2>2. Xuất hàng loạt</h2>
 <label class="field"><span>Danh sách sinh viên</span><textarea id="bulk" placeholder="Mỗi dòng một sinh viên:&#10;NGUYỄN VĂN A, 261A123456, Công nghệ thông tin&#10;TRẦN THỊ B, 261A123457, Kinh tế"></textarea></label>
-<div class="hint">Định dạng mỗi dòng: Họ tên, MSSV, Khoa. Có thể dán từ Excel (các cột phân cách bằng tab).</div>
+<label class="field"><span>Hoặc chọn file (tối đa 700 sinh viên)</span><input id="bulkFile" type="file" accept=".txt,.csv,.tsv,.xls,.xlsx"></label>
+<div class="hint">Mỗi dòng hoặc mỗi hàng gồm: Họ tên, MSSV, Khoa. Hỗ trợ TXT, CSV, TSV và Excel (.xls, .xlsx). Có thể có hàng tiêu đề.</div>
 <div class="buttons"><button class="secondary" id="many">Xuất nhiều sinh viên thành 1 file PDF</button></div>
 <div class="status" id="status" aria-live="polite"></div>
 </section>
@@ -77,11 +79,30 @@ function getSingle(){return {name:$('name').value.trim(),mssv:$('mssv').value.tr
 function validate(d){return d.name&&d.mssv&&d.faculty}
 function renderData(d){drawCert(d);return canvas.toDataURL('image/png',1)}
 function safeName(s){return (s||'sinh-vien').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/Đ/g,'D').replace(/[^a-zA-Z0-9_-]+/g,'_').replace(/^_+|_+$/g,'').slice(0,70)||'sinh-vien'}
+function rowsToStudents(rows){
+ const cleaned=rows.map(row=>Array.isArray(row)?row.map(cell=>String(cell??'').trim()):[]).filter(row=>row.some(Boolean));
+ if(cleaned.length&&/họ\s*tên|ho\s*ten|name/i.test(cleaned[0][0])&&/mssv|mã\s*số|ma\s*so|student/i.test(cleaned[0][1]))cleaned.shift();
+ return cleaned.map(parts=>({name:parts[0]||'',mssv:parts[1]||'',faculty:parts.slice(2).join(', ').trim()}));
+}
 function parseBulk(raw){
- return raw.split(/\r?\n/).map(line=>line.trim()).filter(Boolean).map(line=>{
-  const parts=line.includes('\t')?line.split('\t'):line.split(',');
-  return {name:(parts[0]||'').trim(),mssv:(parts[1]||'').trim(),faculty:parts.slice(2).join(line.includes('\t')?'\t':',').trim()};
- });
+ return rowsToStudents(raw.split(/\r?\n/).filter(line=>line.trim()).map(line=>{
+  const separator=line.includes('\t')?'\t':',';
+  return line.split(separator);
+ }));
+}
+async function readBulkFile(file){
+ const extension=file.name.toLowerCase().split('.').pop();
+ if(extension==='xls'||extension==='xlsx'){
+  if(!window.XLSX)throw new Error('Không tải được thư viện đọc Excel. Hãy kiểm tra kết nối Internet.');
+  const workbook=XLSX.read(await file.arrayBuffer(),{type:'array'});
+  const firstSheet=workbook.Sheets[workbook.SheetNames[0]];
+  return rowsToStudents(XLSX.utils.sheet_to_json(firstSheet,{header:1,defval:''}));
+ }
+ return parseBulk(await file.text());
+}
+async function getBulkStudents(){
+ const file=$('bulkFile').files[0];
+ return file?await readBulkFile(file):parseBulk($('bulk').value);
 }
 function setStatus(s){$('status').textContent=s}
 $('one').addEventListener('click',()=>{
@@ -92,11 +113,15 @@ $('one').addEventListener('click',()=>{
  pdf.save(`Giay-chung-nhan_${safeName(d.mssv)}_${safeName(d.name)}.pdf`);setStatus('Đã tạo PDF cho '+d.name+'.');
 });
 $('many').addEventListener('click',()=>{
- const rows=parseBulk($('bulk').value);if(!rows.length){setStatus('Hãy nhập danh sách sinh viên trước.');return}
- const invalid=rows.findIndex(d=>!validate(d));if(invalid>=0){setStatus(`Dòng ${invalid+1} chưa đủ họ tên, MSSV hoặc khoa.`);return}
- if(!window.jspdf){setStatus('Không tải được thư viện PDF. Hãy kiểm tra kết nối Internet rồi thử lại.');return}
- const {jsPDF}=window.jspdf,pdf=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
- rows.forEach((d,i)=>{if(i)pdf.addPage('a4','landscape');pdf.addImage(renderData(d),'PNG',0,0,297,205.3)});
- pdf.save(`Giay-chung-nhan_${rows.length}_sinh-vien.pdf`);setStatus(`Đã tạo 1 file PDF gồm ${rows.length} giấy chứng nhận.`);
+ const button=$('many');button.disabled=true;
+ getBulkStudents().then(rows=>{
+  if(!rows.length){setStatus('Hãy nhập danh sách hoặc chọn file trước.');return}
+  if(rows.length>700){setStatus(`Danh sách có ${rows.length} sinh viên; giới hạn tối đa là 700.`);return}
+  const invalid=rows.findIndex(d=>!validate(d));if(invalid>=0){setStatus(`Dòng ${invalid+1} chưa đủ họ tên, MSSV hoặc khoa.`);return}
+  if(!window.jspdf){setStatus('Không tải được thư viện PDF. Hãy kiểm tra kết nối Internet rồi thử lại.');return}
+  const {jsPDF}=window.jspdf,pdf=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
+  rows.forEach((d,i)=>{if(i)pdf.addPage('a4','landscape');pdf.addImage(renderData(d),'PNG',0,0,297,205.3)});
+  pdf.save(`Giay-chung-nhan_${rows.length}_sinh-vien.pdf`);setStatus(`Đã tạo 1 file PDF gồm ${rows.length} giấy chứng nhận.`);
+ }).catch(error=>setStatus(error.message||'Không đọc được file danh sách.')).finally(()=>{button.disabled=false});
 });
 </script></body></html>
