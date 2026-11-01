@@ -43,6 +43,7 @@ footer{max-width:1180px;margin:0 auto;padding:0 18px 28px;color:#6b778b;font-siz
 <hr style="border:0;border-top:1px solid #e7ecf3;margin:22px 0">
 <h2>3. Danh sách đã xuất trong ngày</h2>
 <div class="hint" id="dailyCount">Chưa có chứng nhận nào được xuất hôm nay.</div>
+<div class="hint" id="nextSerialInfo">Số quyết định kế tiếp: 001/QĐ/HSV</div>
 <div class="buttons"><button class="secondary" id="exportDaily">Xuất danh sách Excel trong ngày</button></div>
 <div class="hint">Danh sách ghi nhận các chứng nhận đã xuất từ trình duyệt này, gồm họ tên, MSSV, khoa, số quyết định, thời gian và loại xuất.</div>
 </section>
@@ -64,19 +65,58 @@ function fitText(text,maxWidth,startSize,bold=true){
  while(ctx.measureText(text).width>maxWidth&&size>22){size--;ctx.font=`${bold?'700':'400'} ${size}px Arial`}
  return size;
 }
-// Số quyết định được lưu trên trình duyệt và tăng theo từng chứng nhận thực sự được xuất.
-const SERIAL_KEY='vhu_student_certificate_serial_v1';
+// Bộ đếm dùng chung cho xuất lẻ và xuất hàng loạt.
+// Ưu tiên IndexedDB để giữ số thứ tự ổn định khi mở HTML trực tiếp bằng file://;
+// localStorage là phương án dự phòng cho các trình duyệt không hỗ trợ IndexedDB.
+const SERIAL_KEY='vhu_student_certificate_serial_v2';
+const SERIAL_DB='VHUCertificateCounter';
+const SERIAL_STORE='settings';
 let memorySerial=1;
-function getNextSerial(){
+function readLocalSerial(){
  try{return Math.max(1,Number.parseInt(localStorage.getItem(SERIAL_KEY)||'1',10)||1)}
  catch{return memorySerial}
 }
-function reserveSerials(count){
- const first=getNextSerial();
- const serials=Array.from({length:count},(_,i)=>String(first+i).padStart(3,'0'));
- const next=first+count; memorySerial=next;
- try{localStorage.setItem(SERIAL_KEY,String(next))}catch{}
- return serials;
+function getNextSerial(){return readLocalSerial()}
+async function syncSerialCounter(){
+ try{const db=await openSerialDB();const value=await new Promise((resolve,reject)=>{const tx=db.transaction(SERIAL_STORE,'readonly');const req=tx.objectStore(SERIAL_STORE).get('nextSerial');req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error)});db.close();if(value){const next=Math.max(readLocalSerial(),Number.parseInt(value,10)||1);memorySerial=next;try{localStorage.setItem(SERIAL_KEY,String(next))}catch{};updateDailyCount()}}catch{}
+}
+function openSerialDB(){
+ return new Promise((resolve,reject)=>{
+  if(!('indexedDB' in window)){reject(new Error('IndexedDB không khả dụng'));return}
+  const request=indexedDB.open(SERIAL_DB,1);
+  request.onupgradeneeded=()=>{const db=request.result;if(!db.objectStoreNames.contains(SERIAL_STORE))db.createObjectStore(SERIAL_STORE)};
+  request.onsuccess=()=>resolve(request.result);
+  request.onerror=()=>reject(request.error||new Error('Không mở được bộ nhớ số thứ tự'));
+ });
+}
+async function reserveSerials(count){
+ let first;
+ try{
+  const db=await openSerialDB();
+  first=await new Promise((resolve,reject)=>{
+   const tx=db.transaction(SERIAL_STORE,'readwrite');
+   const store=tx.objectStore(SERIAL_STORE);
+   const get=store.get('nextSerial');
+   let start=1;
+   get.onsuccess=()=>{
+    let legacy=1;try{legacy=Math.max(1,Number.parseInt(localStorage.getItem('vhu_student_certificate_serial_v1')||'1',10)||1)}catch{}
+    start=Math.max(1,Number.parseInt(get.result||'1',10)||1,readLocalSerial(),legacy);
+    store.put(start+count,'nextSerial');
+   };
+   get.onerror=()=>reject(get.error||new Error('Không đọc được số thứ tự'));
+   tx.oncomplete=()=>resolve(start);
+   tx.onerror=()=>reject(tx.error||new Error('Không lưu được số thứ tự'));
+   tx.onabort=()=>reject(tx.error||new Error('Không thể cập nhật số thứ tự'));
+  });
+  db.close();
+ }catch(error){
+  // Dự phòng; nếu trình duyệt chặn cả hai kiểu lưu, vẫn tăng trong phiên đang mở.
+  first=readLocalSerial();
+  try{localStorage.setItem(SERIAL_KEY,String(first+count))}catch{}
+ }
+ memorySerial=first+count;
+ try{localStorage.setItem(SERIAL_KEY,String(memorySerial))}catch{}
+ return Array.from({length:count},(_,i)=>String(first+i).padStart(3,'0'));
 }
 function drawCert(data={}) {
  if(!img.complete||!img.naturalWidth)return;
@@ -135,6 +175,7 @@ function todaysExports(){const today=localDateKey();return readExportLog().filte
 function updateDailyCount(){
  const count=todaysExports().length;
  $('dailyCount').textContent=count?`Hôm nay đã xuất ${count} giấy chứng nhận.`:'Chưa có chứng nhận nào được xuất hôm nay.';
+ $('nextSerialInfo').textContent=`Số quyết định kế tiếp: ${String(getNextSerial()).padStart(3,'0')}/QĐ/HSV`;
 }
 
 function rowsToStudents(rows){
@@ -163,11 +204,11 @@ async function getBulkStudents(){
  return file?await readBulkFile(file):parseBulk($('bulk').value);
 }
 function setStatus(s){$('status').textContent=s}
-$('one').addEventListener('click',()=>{
+$('one').addEventListener('click',async()=>{
  const d=getSingle();if(!validate(d)){setStatus('Vui lòng nhập đủ họ tên, MSSV và khoa.');return}
  if(!window.jspdf){setStatus('Không tải được thư viện PDF. Hãy kiểm tra kết nối Internet rồi thử lại.');return}
  const {jsPDF}=window.jspdf,pdf=new jsPDF({orientation:'landscape',unit:'mm',format:[297,211.6],compress:true});
- const serial=reserveSerials(1)[0];
+ const serial=(await reserveSerials(1))[0];updateDailyCount();
  pdf.addImage(renderData({...d,serial}),'JPEG',0,0,297,211.6,'CERTIFICATE','FAST');
  const filename=`${safeName(d.name)}_${serial}.pdf`;
  pdf.save(filename);
@@ -182,15 +223,20 @@ $('many').addEventListener('click',()=>{
   const invalid=rows.findIndex(d=>!validate(d));if(invalid>=0){setStatus(`Dòng ${invalid+1} chưa đủ họ tên, MSSV hoặc khoa.`);return}
   if(!window.jspdf){setStatus('Không tải được thư viện PDF. Hãy kiểm tra kết nối Internet rồi thử lại.');return}
   const {jsPDF}=window.jspdf,pdf=new jsPDF({orientation:'landscape',unit:'mm',format:[297,211.6],compress:true});
-  const serials=reserveSerials(rows.length);
-  for(let i=0;i<rows.length;i++){
+  // Cấp một số quyết định RIÊNG cho từng sinh viên, theo đúng thứ tự danh sách.
+  // Ví dụ 10 sinh viên trong cùng PDF sẽ nhận 001, 002, ... 010; lần xuất sau tiếp tục 011.
+  const serials=await reserveSerials(rows.length);
+  const numberedRows=rows.map((student,index)=>({...student,serial:serials[index]}));
+  updateDailyCount();
+  for(let i=0;i<numberedRows.length;i++){
    if(i)pdf.addPage([297,211.6],'landscape');
-   pdf.addImage(renderData({...rows[i],serial:serials[i]}),'JPEG',0,0,297,211.6,'CERTIFICATE','FAST');
-   if((i+1)%10===0){setStatus(`Đang tạo PDF: ${i+1}/${rows.length} sinh viên...`);await new Promise(resolve=>setTimeout(resolve,0))}
+   // Mỗi trang PDF lấy số quyết định của chính sinh viên ở trang đó.
+   pdf.addImage(renderData(numberedRows[i]),'JPEG',0,0,297,211.6,`CERTIFICATE_${i}_${numberedRows[i].serial}`,'FAST');
+   if((i+1)%10===0){setStatus(`Đang tạo PDF: ${i+1}/${numberedRows.length} sinh viên...`);await new Promise(resolve=>setTimeout(resolve,0))}
   }
-  const filename=`Giay-chung-nhan_${serials[0]}-${serials[serials.length-1]}_${rows.length}-sinh-vien.pdf`;
+  const filename=`Giay-chung-nhan_${serials[0]}-${serials[serials.length-1]}_${numberedRows.length}-sinh-vien.pdf`;
   pdf.save(filename);
-  recordExports(rows,serials,'Xuất hàng loạt',rows.map(()=>filename));
+  recordExports(numberedRows,serials,'Xuất hàng loạt',numberedRows.map(()=>filename));
   setStatus(`Đã tạo 1 file PDF gồm ${rows.length} giấy chứng nhận · Số ${serials[0]} đến ${serials[serials.length-1]}/QĐ/HSV.`);
  }).catch(error=>setStatus(error.message||'Không đọc được file danh sách.')).finally(()=>{button.disabled=false});
 });
@@ -210,4 +256,5 @@ $('exportDaily').addEventListener('click',()=>{
  setStatus(`Đã xuất danh sách Excel gồm ${rows.length} chứng nhận trong ngày.`);
 });
 updateDailyCount();
+syncSerialCounter();
 </script></body></html>
