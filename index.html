@@ -36,14 +36,14 @@ footer{max-width:1180px;margin:0 auto;padding:0 18px 28px;color:#6b778b;font-siz
 <hr style="border:0;border-top:1px solid #e7ecf3;margin:22px 0">
 <h2>2. Xuất hàng loạt</h2>
 <label class="field"><span>Danh sách sinh viên</span><textarea id="bulk" placeholder="Mỗi dòng một sinh viên:&#10;NGUYỄN VĂN A, 261A123456, Công nghệ thông tin&#10;TRẦN THỊ B, 261A123457, Kinh tế"></textarea></label>
-<label class="field"><span>Hoặc chọn file (tối đa 700 sinh viên)</span><input id="bulkFile" type="file" accept=".txt,.csv,.tsv,.xls,.xlsx"></label>
-<div class="hint">Mỗi dòng hoặc mỗi hàng gồm: Họ tên, MSSV, Khoa. Hỗ trợ TXT, CSV, TSV và Excel (.xls, .xlsx). Có thể có hàng tiêu đề.</div>
+<label class="field"><span>Hoặc chọn file danh sách sinh viên</span><input id="bulkFile" type="file" accept=".txt,.csv,.tsv,.xls,.xlsx"></label>
+<div class="hint">Mỗi dòng hoặc mỗi hàng gồm: Họ tên, MSSV, Khoa. Hỗ trợ TXT, CSV, TSV và Excel (.xls, .xlsx). Tự nhận diện và bỏ qua hàng tiêu đề như “Họ và tên, MSSV, Khoa” hoặc “Ho va ten, MSSV, Khoa”.</div>
 <div class="buttons"><button class="secondary" id="many">Xuất nhiều sinh viên thành 1 file PDF</button></div>
 <div class="status" id="status" aria-live="polite"></div>
 <hr style="border:0;border-top:1px solid #e7ecf3;margin:22px 0">
 <h2>3. Danh sách đã xuất trong ngày</h2>
 <div class="hint" id="dailyCount">Chưa có chứng nhận nào được xuất hôm nay.</div>
-<div class="hint" id="nextSerialInfo">Số quyết định được lưu cố định theo MSSV</div>
+<div class="hint" id="nextSerialInfo">Số quyết định cố định là 02</div>
 <div class="buttons"><button class="secondary" id="exportDaily">Xuất danh sách Excel trong ngày</button></div>
 <div class="hint">Danh sách ghi nhận các chứng nhận đã xuất từ trình duyệt này, gồm họ tên, MSSV, khoa, số quyết định, thời gian và loại xuất.</div>
 </section>
@@ -65,54 +65,11 @@ function fitText(text,maxWidth,startSize,bold=true){
  while(ctx.measureText(text).width>maxWidth&&size>22){size--;ctx.font=`${bold?'700':'400'} ${size}px Arial`}
  return size;
 }
-// Số quyết định được lưu lâu dài theo MSSV: sinh viên đã có số sẽ luôn
-// nhận lại đúng số cũ khi xuất lại PDF; sinh viên mới nhận số kế tiếp.
-const SERIAL_STORE_KEY='vhu_certificate_serial_registry_v1';
-function formatSerial(number){return String(number).padStart(2,'0')}
-function readSerialRegistry(){
- try{
-  const value=JSON.parse(localStorage.getItem(SERIAL_STORE_KEY)||'null');
-  if(value&&typeof value==='object'&&value.byMssv&&typeof value.byMssv==='object')
-   return value;
- }catch{}
- return {byMssv:{},next:1};
-}
-function getSerialRegistry(){
- const registry=readSerialRegistry();
- // Khôi phục số đã cấp từ nhật ký cũ nếu trình duyệt chưa có sổ số riêng.
- for(const row of readExportLog()){
-  const mssv=String(row.mssv||'').trim();
-  const match=String(row.serial||'').match(/^(\d+)\s*\//);
-  if(mssv&&match&&!registry.byMssv[mssv]){
-   const number=Number(match[1]);
-   if(number>=1&&number<=700)registry.byMssv[mssv]=number;
-  }
- }
- const used=Object.values(registry.byMssv).map(Number).filter(n=>Number.isInteger(n)&&n>=1&&n<=700);
- registry.next=Math.max(Number(registry.next)||1,used.length?Math.max(...used)+1:1);
- return registry;
-}
-function getNextSerial(){
- const registry=getSerialRegistry();
- return formatSerial(Math.min(registry.next,700));
-}
-async function reserveSerials(students){
- const registry=getSerialRegistry(),serials=[];
- for(const student of students){
-  const mssv=String(student.mssv||'').trim();
-  if(registry.byMssv[mssv]){
-   serials.push(formatSerial(registry.byMssv[mssv]));
-   continue;
-  }
-  if(registry.next>700)throw new Error('Đã cấp hết số quyết định từ 01 đến 700. Vui lòng kiểm tra danh sách đã cấp số.');
-  registry.byMssv[mssv]=registry.next;
-  serials.push(formatSerial(registry.next));
-  registry.next++;
- }
- try{localStorage.setItem(SERIAL_STORE_KEY,JSON.stringify(registry));}
- catch{throw new Error('Không thể lưu sổ số quyết định trên trình duyệt. Vui lòng bật bộ nhớ trang web rồi thử lại.');}
- return serials;
-}
+// Số quyết định theo phôi chứng nhận: luôn cố định là 02.
+const FIXED_SERIAL='02';
+function formatSerial(){return FIXED_SERIAL}
+function getNextSerial(){return FIXED_SERIAL}
+async function reserveSerials(students){return students.map(()=>FIXED_SERIAL)}
 function drawCert(data={}) {
  if(!img.complete||!img.naturalWidth)return;
  ctx.clearRect(0,0,canvas.width,canvas.height);
@@ -170,12 +127,24 @@ function todaysExports(){const today=localDateKey();return readExportLog().filte
 function updateDailyCount(){
  const count=todaysExports().length;
  $('dailyCount').textContent=count?`Hôm nay đã xuất ${count} giấy chứng nhận.`:'Chưa có chứng nhận nào được xuất hôm nay.';
- $('nextSerialInfo').textContent=`Số tiếp theo: ${getNextSerial()}/QĐ/HSV · Số đã cấp được lưu theo MSSV, xuất lại vẫn giữ số cũ (tối đa 700).`;
+ $('nextSerialInfo').textContent=`Số quyết định cố định: 02/QĐ/HSV · Không tự tăng số.`;
 }
 
+function normalizeHeader(value){
+ return String(value??'').trim().toLowerCase()
+  .normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d')
+  .replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');
+}
 function rowsToStudents(rows){
  const cleaned=rows.map(row=>Array.isArray(row)?row.map(cell=>String(cell??'').trim()):[]).filter(row=>row.some(Boolean));
- if(cleaned.length&&/họ\s*tên|ho\s*ten|name/i.test(cleaned[0][0])&&/mssv|mã\s*số|ma\s*so|student/i.test(cleaned[0][1]))cleaned.shift();
+ if(cleaned.length>=1){
+  const first=normalizeHeader(cleaned[0][0]);
+  const second=normalizeHeader(cleaned[0][1]);
+  const isNameHeader=/^(ho (va )?ten|name|full name)$/.test(first);
+  const isMssvHeader=/^(mssv|ma so|ma so sinh vien|student id|student code)$/.test(second);
+  // Bỏ dòng tiêu đề phổ biến như "Họ và tên, MSSV, Khoa" hoặc "Ho va ten, MSSV, Khoa".
+  if(isNameHeader&&isMssvHeader)cleaned.shift();
+ }
  return cleaned.map(parts=>({name:parts[0]||'',mssv:parts[1]||'',faculty:parts.slice(2).join(', ').trim()}));
 }
 function parseBulk(raw){
@@ -214,11 +183,11 @@ $('many').addEventListener('click',()=>{
  const button=$('many');button.disabled=true;
  getBulkStudents().then(async rows=>{
   if(!rows.length){setStatus('Hãy nhập danh sách hoặc chọn file trước.');return}
-  if(rows.length>700){setStatus(`Danh sách có ${rows.length} sinh viên; giới hạn tối đa là 700.`);return}
+
   const invalid=rows.findIndex(d=>!validate(d));if(invalid>=0){setStatus(`Dòng ${invalid+1} chưa đủ họ tên, MSSV hoặc khoa.`);return}
   if(!window.jspdf){setStatus('Không tải được thư viện PDF. Hãy kiểm tra kết nối Internet rồi thử lại.');return}
   const {jsPDF}=window.jspdf,pdf=new jsPDF({orientation:'landscape',unit:'mm',format:[297,211.6],compress:true});
-  // Mỗi MSSV được gán một số cố định; sinh viên đã xuất trước đó giữ nguyên số.
+  // Số quyết định được cố định là 02 cho tất cả chứng nhận.
   const serials=await reserveSerials(rows);
   const numberedRows=rows.map((student,index)=>({...student,serial:serials[index]}));
   updateDailyCount();
@@ -231,7 +200,7 @@ $('many').addEventListener('click',()=>{
   const filename=`Giay-chung-nhan_${serials[0]}-${serials[serials.length-1]}_${numberedRows.length}-sinh-vien.pdf`;
   pdf.save(filename);
   recordExports(numberedRows,serials,'Xuất hàng loạt',numberedRows.map(()=>filename));
-  setStatus(`Đã tạo 1 file PDF gồm ${rows.length} giấy chứng nhận · Số quyết định của từng sinh viên đã được lưu cố định theo MSSV.`);
+  setStatus(`Đã tạo 1 file PDF gồm ${rows.length} giấy chứng nhận · Tất cả đều dùng số quyết định 02.`);
  }).catch(error=>setStatus(error.message||'Không đọc được file danh sách.')).finally(()=>{button.disabled=false});
 });
 $('exportDaily').addEventListener('click',()=>{
